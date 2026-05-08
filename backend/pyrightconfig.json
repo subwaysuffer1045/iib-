@@ -1,0 +1,10 @@
+{
+  "pythonVersion": "3.12",
+  "pythonPlatform": "Windows",
+  "venvPath": ".",
+  "venv": ".venv",
+  "include": ["app", "tests", "migrations", "scripts"],
+  "exclude": ["**/__pycache__", "**/.venv"],
+  "typeCheckingMode": "basic",
+  "useLibraryCodeForTypes": true
+}

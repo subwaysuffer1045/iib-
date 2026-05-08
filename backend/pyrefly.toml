@@ -1,0 +1,10 @@
+# Pyrefly configuration
+# Points to the virtual environment so the IDE finds installed packages.
+# https://pyrefly.org/en/docs/configuration/
+
+[python]
+interpreter = ".venv/Scripts/python.exe"
+
+[project]
+include = ["app/**/*.py", "tests/**/*.py", "migrations/**/*.py", "scripts/**/*.py"]
+exclude = ["**/__pycache__/**", "**/.venv/**"]
