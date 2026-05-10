@@ -1,0 +1,325 @@
+/caveman
+
+paste this entire prompt to Antigravity:
+
+---
+
+```
+Build a single Python script: find_internships.py
+Location: e:\intraget\iib-india\backend\scripts\find_internships.py
+
+PURPOSE:
+Search internship websites → verify companies → filter paid only →
+build clean Excel file → auto-expire old entries → output .xlsx
+
+---
+
+TECH STACK (pip install these, all free):
+- httpx (async HTTP)
+- openpyxl (Excel writing)
+- python-whois (domain age)
+- beautifulsoup4 (HTML parsing)
+- python-dotenv (env vars)
+- rich (terminal progress display)
+
+---
+
+INTERNSHIP SOURCES (in order of priority):
+
+SOURCE 1 — Adzuna API (free, 1000 req/day)
+Base URL: https://api.adzuna.com/v1/api/jobs/in/search/1
+Params:
+  app_id = ADZUNA_APP_ID from .env
+  app_key = ADZUNA_API_KEY from .env
+  results_per_page = 50
+  what = "<domain keyword> intern"
+  content-type = application/json
+For each of 6 domains use these search keywords:
+  Android App Development → "android developer intern"
+  Game Development → "game developer intern unity unreal"
+  iOS App Development → "ios developer intern swift"
+  Web Development → "web developer intern frontend backend"
+  Graphic Design → "graphic design intern ui designer"
+  Data Science → "data science intern machine learning"
+
+SOURCE 2 — Internshala (scrape public listings, no login)
+URL: https://internshala.com/internships/<keyword>-internship/
+Keywords per domain:
+  Android → android-development
+  Game Dev → game-development
+  iOS → ios-development
+  Web Dev → web-development
+  Graphic Design → graphic-designing
+  Data Science → data-science
+Scrape: company name, stipend, title, duration, last date, apply link, location
+Use httpx + BeautifulSoup. 5s timeout. On any error → skip, log, continue.
+
+SOURCE 3 — Unstop (scrape public listings)
+URL: https://unstop.com/internships?domain=<keyword>
+Scrape same fields as Internshala.
+On any error → skip, log, continue.
+
+---
+
+DOMAINS (exactly these 6, no others):
+TARGET_DOMAINS = [
+  "Android App Development",
+  "Game Development",
+  "iOS App Development",
+  "Web Development",
+  "Graphic Design",
+  "Data Science"
+]
+
+EXCEL SHEET TABS:
+Active tabs (one per domain):
+  "APP ANDROID", "Game development", "APP IOS",
+  "WEB DEVELOPMENT", "Graphic Design", "DATA SCIENCE"
+Plus these tabs always:
+  "NEEDS REVIEW", "REJECTED", "EXPIRED"
+
+---
+
+EXCEL COLUMN FORMAT (all tabs use same columns A-I):
+A: Sr. No.
+B: Company Name
+C: Stipend
+D: Name of internship
+E: Duration
+F: Role
+G: Last Date  (format: "DD Mon YYYY" or "Not mentioned")
+H: Link       (use openpyxl hyperlink — NEVER write plain text "LINK" without real URL)
+I: Location
+
+Sr. No. must be recalculated cleanly per tab (1,2,3... no gaps).
+
+---
+
+PIPELINE — run in this EXACT order for every internship found:
+
+STEP 1: NORMALIZE
+  - Parse stipend: extract number from "₹5000/month", "5k", "5,000 pm"
+    → store as stipend_min (int), stipend_display (string)
+  - Parse location: normalize
+    "WFH"/"Remote"/"Work from home" → "Work from home"
+    "Onsite"/"On-Site"/"(On-Site)" → "On-site"
+    city names → keep as-is
+  - Parse last_date: convert any date string to datetime object
+  - Extract role: shorten internship title to clean role name
+    "Flutter Developer - Internship" → "Flutter Developer Intern"
+    "Unity FX Artist (VFX) – Mobile Game Project" → "Unity FX Artist (VFX)"
+
+STEP 2: PAID GATE
+  - stipend_min must be > 0
+  - OR stipend_display contains "interview basis" (medium confidence)
+  - FAIL → status = "REJECTED", reason = "unpaid_or_missing_stipend"
+  - HARD STOP if fail
+
+STEP 3: FRAUD DETECTION
+  Scan title + description for these keywords:
+    "training fee", "registration fee", "security deposit",
+    "certificate fee", "joining fee", "pay to work",
+    "pay to apply", "investment required", "refundable deposit",
+    "refer and earn", "mlm", "downline", "earn from home"
+  ANY match → status = "REJECTED", reason = "fraud_keyword:<keyword>"
+  HARD STOP if match found
+
+STEP 4: LINK VALIDATION
+  async HTTP GET apply_link with 8s timeout, follow redirects
+  FAIL conditions:
+    - HTTP 4xx/5xx response
+    - Final URL domain is wa.me or t.me or bit.ly
+    - Connection timeout
+    - Redirect to unrelated domain (not company domain + not known ATS)
+  KNOWN ATS DOMAINS (auto-pass):
+    internshala.com, linkedin.com, naukri.com, unstop.com,
+    wellfound.com, lever.co, greenhouse.io, workday.com,
+    smartrecruiters.com, ashbyhq.com, workindia.in
+  PASS → apply_link_valid = True
+  FAIL → status = "REJECTED", reason = "invalid_link:<reason>"
+  HARD STOP if fail
+
+STEP 5: COMPANY VERIFICATION
+  Run all these checks. Each check = 1 signal if passes.
+  Infrastructure failure (timeout/error) = 0 signal, NOT -1 signal.
+
+  CHECK 1 — Website exists (httpx GET company domain, 5s timeout)
+    Pass: 2xx response → signal +1
+    Fail: 4xx/5xx/timeout → signal +0 (infra failure, not fraud)
+
+  CHECK 2 — Website has real pages (scrape homepage links)
+    Pass: has /about OR /careers OR /contact in links → signal +1
+    Fail: no such pages → signal +0
+
+  CHECK 3 — Apply link on known ATS
+    Pass: apply_link domain in KNOWN_ATS_DOMAINS → signal +1
+    Fail: unknown domain → signal +0
+
+  CHECK 4 — LinkedIn company page exists
+    HTTP GET https://www.linkedin.com/company/<company-name-slug>
+    Pass: 200 response → signal +1
+    Fail: 404 → signal +0
+
+  CHECK 5 — Domain age (python-whois)
+    age >= 365 days → signal +1
+    age 90-365 days → signal +0
+    age < 90 days → signal -1 (active negative)
+    whois timeout → signal +0 (infra failure)
+
+  CHECK 6 — Internshala company page exists
+    HTTP GET https://internshala.com/companies/<slug>/
+    Pass: 200 → signal +1
+    Fail: 404 → signal +0
+
+  CHECK 7 — Glassdoor company exists
+    HTTP GET https://www.glassdoor.co.in/Reviews/<slug>-Reviews
+    Pass: 200 → signal +1
+    Fail: → signal +0
+
+  CHECK 8 — Google Maps / Places name search (free tier)
+    Only if GOOGLE_MAPS_API_KEY set in .env
+    Found company with reviews → signal +1
+    Not found / key missing → signal +0
+
+  trust_score = sum of signals (min 0, max 8)
+  
+  DECISION:
+    trust_score >= 4 → company_status = "VERIFIED"
+    trust_score 2-3  → company_status = "NEEDS_REVIEW"
+    trust_score <= 1 → company_status = "REJECTED", reason = "low_trust"
+
+  If REJECTED → status = "REJECTED", HARD STOP
+
+STEP 6: DEADLINE CHECK
+  today = datetime.today().date()
+  If last_date is set AND last_date < today:
+    → status = "EXPIRED", reason = "deadline_passed"
+    → move to EXPIRED tab, STOP
+  If last_date is None:
+    → mark as "Not mentioned", set default_expiry = today + 60 days
+    → if created_at + 60 days < today → status = "EXPIRED"
+
+STEP 7: DEDUPLICATION
+  hash = SHA256(company_name.lower() + title.lower() + domain)
+  Check against seen_hashes set (in-memory per run)
+  If duplicate → skip silently
+
+STEP 8: WRITE TO EXCEL
+  All checks passed → write to correct domain tab
+  status = "REJECTED" for any step → write to REJECTED tab with reason
+  status = "EXPIRED" → write to EXPIRED tab
+  company_status = "NEEDS_REVIEW" → write to NEEDS REVIEW tab
+  
+  REJECTED tab extra columns: + "Rejection Reason" + "Checked At"
+  EXPIRED tab extra columns: + "Expired At"
+  NEEDS REVIEW tab extra columns: + "Reason" + "Checked At"
+
+---
+
+EXCEL FORMATTING (openpyxl):
+
+Header row (row 1):
+  - Background: #1A1A1E (dark)
+  - Font color: #F5A623 (amber)
+  - Font bold: True
+  - Font: Calibri 11
+
+Data rows:
+  - Alternating: #0D0D0F and #141417
+  - Font color: #F8F8F8
+  - Font: Calibri 10
+
+Link column (H):
+  - Use ws.cell().hyperlink = apply_link
+  - Display text = "Apply" 
+  - Font color: #F5A623, underline: True
+  - NEVER write plain text without hyperlink
+
+Column widths:
+  A(Sr.No.)=8, B(Company)=25, C(Stipend)=22,
+  D(Name)=40, E(Duration)=12, F(Role)=28,
+  G(LastDate)=14, H(Link)=10, I(Location)=18
+
+Freeze row 1 (header always visible).
+Auto-filter on all columns.
+
+---
+
+CLI INTERFACE:
+
+# Run all 6 domains
+python find_internships.py --all
+
+# Run single domain
+python find_internships.py --domain "Android App Development"
+
+# Run with output filename
+python find_internships.py --all --output "IIB_India_May2026.xlsx"
+
+# Dry run (no file write, just print stats)
+python find_internships.py --all --dry-run
+
+---
+
+OUTPUT:
+Default filename: IIB_India_Internships_YYYY_MM_DD.xlsx
+Save to: e:\intraget\iib-india\output\
+
+Print summary at end:
+┌─────────────────────────────────────┐
+│ IIB India — Run Complete            │
+│ Total found:      142               │
+│ Active (saved):    67               │
+│ Rejected:          48               │
+│ Expired:           11               │
+│ Needs Review:      16               │
+│ Output: IIB_India_2026_05_10.xlsx  │
+└─────────────────────────────────────┘
+
+---
+
+ENV VARS NEEDED (.env file):
+ADZUNA_APP_ID=
+ADZUNA_API_KEY=
+GOOGLE_MAPS_API_KEY=   # optional
+HTTP_TIMEOUT=8
+MAX_RESULTS_PER_SOURCE=50
+
+---
+
+ERROR HANDLING RULES:
+- Any single source fails → log warning, skip source, continue others
+- Any single internship check fails → log reason, move to REJECTED, continue
+- Network timeout on verification → infra_failure, do NOT reject company for it
+- openpyxl write error → retry once, then log and exit cleanly
+- Script must NEVER crash entirely from one bad internship
+
+---
+
+ABSOLUTE RULES:
+1. NEVER write fake stipend values
+2. NEVER write plain "LINK" text without real hyperlink
+3. NEVER write expired internships to active tabs
+4. NEVER write unpaid internships to active tabs
+5. NEVER write fraud internships to active tabs
+6. NEVER crash on single bad internship — catch all exceptions per item
+7. ALWAYS recalculate Sr. No. cleanly per tab before saving
+8. ALWAYS save output file even if 0 internships found (empty tabs ok)
+9. DO NOT import any library not listed above
+10. DO NOT add database dependency — this is standalone script only
+
+---
+
+Write the complete script in ONE file.
+No placeholder comments like "# implement this later".
+Every function must be fully implemented.
+After writing, show me the pip install command for all dependencies.
+```
+
+---
+
+**what this prompt builds:**
+
+standalone script. zero database. zero server. runs on laptop. outputs clean Excel. all 9 pipeline steps. proper formatting. CLI interface. auto-expire. dedup. trust score from 8 real checks.
+
+**paste to Antigravity. say go.**

@@ -1,15 +1,17 @@
 import React from 'react'
 
 const DOMAINS = [
+  { value: 'web-development', label: 'Web Dev', icon: '◻' },
+  { value: 'android-development', label: 'Android', icon: '▣' },
+  { value: 'app-development', label: 'iOS / App Dev', icon: '▢' },
+  { value: 'game-development', label: 'Game Dev', icon: '◎' },
+  { value: 'graphic-design', label: 'Graphic Design', icon: '⬡' },
+  { value: 'data-science', label: 'Data Science', icon: '◆' },
+  { value: 'ui-ux', label: 'UI / UX', icon: '⬡' },
   { value: 'frontend', label: 'Frontend', icon: '◈' },
   { value: 'backend', label: 'Backend', icon: '◎' },
   { value: 'full-stack', label: 'Full Stack', icon: '◉' },
-  { value: 'android-development', label: 'Android', icon: '▣' },
-  { value: 'app-development', label: 'App Dev', icon: '▢' },
-  { value: 'web-development', label: 'Web Dev', icon: '◻' },
-  { value: 'data-science', label: 'Data Science', icon: '◆' },
   { value: 'ai-ml', label: 'AI / ML', icon: '◇' },
-  { value: 'ui-ux', label: 'UI / UX', icon: '⬡' },
   { value: 'cloud-devops', label: 'Cloud/DevOps', icon: '△' },
   { value: 'qa', label: 'QA Testing', icon: '▷' },
   { value: 'cybersecurity', label: 'Cybersecurity', icon: '⬢' },

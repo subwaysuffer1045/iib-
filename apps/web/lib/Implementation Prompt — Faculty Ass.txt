@@ -1,0 +1,236 @@
+Implementation Prompt — Faculty Assignment Enhancements
+Module: Rooms & Seating → Step 2 (Assign Supervisors) + Step 3 (Seating Assignment Invigilator Dropdown)
+Stack: React + Node.js + MySQL + Socket.io
+Scope: 3 requirements below. Build in order. Do not skip steps.
+
+REQUIREMENT 1 — Department Label in Faculty Dropdown
+Rule
+Every faculty name rendered anywhere in this module must show department short name in parentheses.
+Format: Prof. Jane Smith (Comps)
+Fallback (no dept mapped): Prof. Jane Smith — no empty parens ever.
+Apply Everywhere
+
+Step 2 → + Assign Faculty dropdown
+Step 2 → Auto-Assign result labels
+Step 2 → Assigned badge in Supervisor/Faculty Duty table
+Step 3 → Invigilator dropdown per block
+Duty sheet print output
+
+DB
+sqlSELECT 
+  f.id,
+  f.name,
+  d.short_name AS department_short_name
+FROM faculty f
+LEFT JOIN departments d ON f.department_id = d.id
+API
+All faculty list endpoints must return:
+json{ "id": 1, "name": "Prof. Jane Smith", "department_short_name": "Comps" }
+department_short_name is null if not mapped — never omit the field.
+Frontend
+Create one shared util. Use it everywhere. No hardcoded name strings.
+jsconst facultyLabel = (f) =>
+  f.department_short_name
+    ? `${f.name} (${f.department_short_name})`
+    : f.name;
+
+REQUIREMENT 2 — Availability-Aware Re-assignment Dropdown
+Trigger
+Admin clicks re-assign on a block that already has a faculty assigned.
+Availability Rule — Critical
+
+Faculty is BUSY if assigned to ANY other session whose time window overlaps the current session's time window.
+
+Do NOT use timeslot_id = same — breaks on partial overlaps.
+Use interval overlap (same logic as EMS Exam Planning clash detection — reuse that utility):
+sqlexisting_session.start_time < :current_end_time
+AND existing_session.end_time > :current_start_time
+API
+GET /api/faculty/availability?session_id=:id
+Response:
+json[
+  {
+    "id": 2,
+    "name": "Prof. Ravi Kumar",
+    "department_short_name": "Mech",
+    "is_available": false,
+    "busy_in_blocks": ["Block 201", "Block 305"]
+  }
+]
+busy_in_blocks is always an array. Faculty can be double-booked. Render as comma-joined: "Busy: Block 201, Block 305".
+Full Availability SQL
+sqlSELECT 
+  f.id,
+  f.name,
+  d.short_name AS department_short_name,
+  CASE WHEN sa.faculty_id IS NULL THEN true ELSE false END AS is_available,
+  GROUP_CONCAT(rb.name SEPARATOR ', ') AS busy_in_blocks
+FROM faculty f
+LEFT JOIN departments d ON f.department_id = d.id
+LEFT JOIN supervisor_assignments sa
+  ON sa.faculty_id = f.id
+  AND sa.session_id IN (
+    SELECT ts.id FROM timetable_sessions ts
+    WHERE ts.date = :exam_date
+      AND ts.start_time < :current_end_time
+      AND ts.end_time > :current_start_time
+      AND ts.id != :current_session_id
+  )
+LEFT JOIN room_blocks rb ON sa.block_id = rb.id
+GROUP BY f.id, f.name, d.short_name
+ORDER BY is_available DESC, f.name ASC
+Dropdown UI
+── Available ──────────────────────────────
+  Prof. Jane Smith (Comps)
+  Dr. Demo Faculty (IT)
+
+── Busy ───────────────────────────────────
+  Prof. Ravi Kumar (Mech)  —  Busy: Block 201
+  pradnya.nar006 (Comps)   —  Busy: Block 305
+
+Available group first, busy group below separator
+Busy items: opacity: 0.6, still selectable (admin override allowed)
+
+Re-assign Save Flow
+Admin selects faculty from dropdown
+        ↓
+If is_available = false →
+  Confirm modal:
+  "Prof. Ravi Kumar (Mech) is assigned to Block 201 in this slot. Reassign anyway?"
+  [Confirm]  [Cancel]
+        ↓
+On Confirm:
+  UPDATE supervisor_assignments
+  SET faculty_id    = :new_faculty_id,
+      updated_at    = NOW(),
+      updated_by    = :admin_id
+  WHERE session_id  = :session_id
+  AND block_id      = :block_id
+  -- UPDATE only. Never DELETE. Preserve full audit trail.
+        ↓
+Refetch availability API → dropdown re-renders live
+
+REQUIREMENT 3 — Assignment Notification with Accept / Deny Flow
+Overview
+When admin assigns or re-assigns faculty, admin must give a written reason. Faculty receives real-time notification with that reason and must Accept or Deny. Denial requires faculty to give a reason. Admin receives denial reason in real-time. No silent failures on either side.
+
+3A — Admin: Reason Modal Before Save
+Fires before Save Assignments or re-assign confirm executes.
+┌──────────────────────────────────────────────┐
+│  Assign: Prof. Jane Smith (Comps)            │
+│  Block 109 · 05/02/2026 · 09:00 – 12:00     │
+│                                              │
+│  Reason for assignment (required):           │
+│  [ textarea · min 10 chars ]                 │
+│                                              │
+│  [Cancel]             [Send Assignment]      │
+└──────────────────────────────────────────────┘
+
+Send Assignment button disabled until textarea ≥ 10 chars
+On submit:
+
+Save to DB with status = 'pending'
+Emit WebSocket event to faculty
+Show admin toast: "Assignment sent. Awaiting faculty confirmation."
+Block badge → Pending (yellow)
+
+
+
+
+3B — Faculty: Receive Notification + Respond
+Faculty receives real-time popup (WebSocket push):
+┌──────────────────────────────────────────────┐
+│  📋 New Duty Assignment                      │
+│                                              │
+│  Exam:  Electronic & Elements Summer 2025    │
+│  Date:  05/02/2026 · 09:00 – 12:00          │
+│  Block: Main Building 109                    │
+│  Assigned by: [Admin Name]                   │
+│                                              │
+│  Reason:                                     │
+│  "You are the only available Comps faculty   │
+│   for this slot due to..."                   │
+│                                              │
+│  [✅ Accept]           [❌ Deny]             │
+└──────────────────────────────────────────────┘
+If Accept:
+
+status → accepted
+Emit assignment:accepted → admin notified instantly
+Admin badge → Assigned (green)
+
+If Deny: Deny Reason Modal fires:
+┌──────────────────────────────────────────────┐
+│  Reason for denial (required):               │
+│  [ textarea · min 10 chars ]                 │
+│                                              │
+│  [Back]               [Submit Denial]        │
+└──────────────────────────────────────────────┘
+
+Submit Denial disabled until ≥ 10 chars
+On submit: status → denied, denial reason saved, emit assignment:denied to admin instantly
+
+
+3C — Admin: Receive Denial Notification
+┌──────────────────────────────────────────────┐
+│  ❌ Assignment Denied                        │
+│                                              │
+│  Prof. Jane Smith (Comps) — Block 109        │
+│  Reason: "I have a scheduled class during    │
+│   this slot which cannot be rescheduled."    │
+│                                              │
+│  [Re-assign]           [Dismiss]             │
+└──────────────────────────────────────────────┘
+
+Re-assign opens availability dropdown for that block directly — no manual navigation
+Block badge → Denied — Reassign (red)
+
+
+3D — DB Schema
+sqlCREATE TABLE faculty_assignment_notifications (
+  id                INT PRIMARY KEY AUTO_INCREMENT,
+  session_id        INT NOT NULL,
+  block_id          INT NOT NULL,
+  faculty_id        INT NOT NULL,
+  assigned_by       INT NOT NULL,
+  assignment_reason TEXT NOT NULL,
+  status            ENUM('pending','accepted','denied') DEFAULT 'pending',
+  denial_reason     TEXT NULL,
+  delivery_status   ENUM('sent','delivered') DEFAULT 'sent',
+  sent_at           DATETIME DEFAULT NOW(),
+  responded_at      DATETIME NULL,
+  FOREIGN KEY (session_id)  REFERENCES timetable_sessions(id),
+  FOREIGN KEY (faculty_id)  REFERENCES faculty(id),
+  FOREIGN KEY (assigned_by) REFERENCES users(id)
+);
+
+ALTER TABLE supervisor_assignments
+  ADD COLUMN status          ENUM('pending','accepted','denied') DEFAULT 'pending',
+  ADD COLUMN notification_id INT NULL REFERENCES faculty_assignment_notifications(id);
+
+3E — WebSocket Delivery
+Use Socket.io. Rooms:
+
+Admin joins: admin:user:{admin_id}
+Faculty joins: faculty:user:{faculty_id}
+
+EventDirectionPayloadassignment:sentServer → Faculty{ notification_id, session, block, reason, assigned_by }assignment:acceptedServer → Admin{ notification_id, faculty_id, block_id }assignment:deniedServer → Admin{ notification_id, faculty_id, block_id, denial_reason }
+Delivery guarantee — implement all 4:
+
+On emit → set delivery_status = 'sent' in DB
+Faculty client ACKs on receive → delivery_status = 'delivered'
+Faculty offline → notification persists in DB, shown as unread badge on next login
+Admin UI polls GET /api/notifications/pending every 30s as WebSocket fallback
+
+
+3F — Badge States (Admin UI)
+DB StatusBadge ColorLabelpendingYellowPending ResponseacceptedGreenAssigneddeniedRedDenied — Reassign
+Denied blocks show inline Re-assign button. No page navigation required.
+
+Build Order
+1. Req 1 — Dept label util + DB join + API change + apply everywhere
+2. Req 2 — Availability API + overlap SQL + dropdown grouping + re-assign save
+3. Req 3 — DB schema first → WebSocket setup → Admin reason modal → 
+           Faculty notification UI → Deny flow → Admin denial receive → 
+           Offline fallback + polling
+Do not start Req 3 before Req 1 and 2 are complete. Faculty notification UI depends on facultyLabel util from Req 1.

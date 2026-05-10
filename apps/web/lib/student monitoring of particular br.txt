@@ -1,0 +1,235 @@
+student monitoring of particular branch - sem - subject - his analysis - performance list 
+
+
+
+You are senior full-stack engineer on EMS (Node.js + Express + Prisma + MySQL + React 18 + Recharts + TanStack Query). HOD Student Monitoring feature. ROLE: HOD only.
+
+RULE: DO NOT write a single line of code yet. First: investigate DB, find problems, plan fixes, get approval. Then build. This order is NON-NEGOTIABLE.
+
+---
+
+## FEATURE SCOPE
+
+HOD dashboard → Student Monitoring:
+Path: Branch (auto = HOD's branch) → Semester → Subject → Student list ranked by performance → Individual student drill-down → Graphs.
+
+RBAC: requireHod middleware on ALL routes. HOD sees ONLY his branch students.
+
+---
+
+## PHASE 0 — DB INVESTIGATION (DO THIS FIRST. NO SKIPPING.)
+
+Before planning anything, answer ALL questions below by reading the actual schema (schema.prisma + migration SQL files):
+
+### Q1 — Where are marks stored?
+- What table holds student marks per subject? (exam_marks? exam_marks_components? exam_results?)
+- What columns exist? (student_id, subject_id, marks_obtained, max_marks, component_type?)
+- Are internal + external marks separate rows or separate columns?
+- Is there a `total_marks` computed column or must we SUM components?
+
+### Q2 — Where is SGPA/CGPA?
+- Is there a dedicated table for SGPA/CGPA? (exam_results? student_grades? student_cgpa?)
+- Is CGPA pre-computed or must we compute from marks + credit weights?
+- Formula used: (sum of grade_points × credits) / total_credits — confirm or show actual formula.
+- Is grade_point stored or derived from percentage?
+
+### Q3 — Student → Branch → Semester linkage
+- How is a student linked to a branch? (users.branch_id? student_profiles.branch_id? enrollments table?)
+- How is a student linked to a semester? (enrollments? student_semester_mapping?)
+- Can a student be in MULTIPLE branches or semesters? (transfers, lateral entry?)
+- Is there a current_semester field or must we infer from enrollment date?
+
+### Q4 — HOD → Branch linkage
+- How is HOD linked to branch? (users.branch_id? hod_assignments table?)
+- Can one HOD manage multiple branches?
+- If HOD's branch_id is NULL, what happens?
+
+### Q5 — Subject → Semester → Branch linkage
+- What table links subjects to semesters and branches? (curriculum? branch_subjects? exam_branch_subjects?)
+- Is there a credits column per subject? (needed for SGPA calc)
+- Are subjects shared across branches or branch-specific?
+
+### Q6 — Data completeness
+- What % of students have marks entered? (are rows absent or NULL?)
+- What % have SGPA/CGPA computed?
+- Can a student have marks for some components but not others?
+- Are there students with NO marks at all (enrolled but not appeared)?
+
+---
+
+## PHASE 1 — PROBLEM REPORT
+
+After Phase 0, write a problems list:
+
+Format each problem as:
+PROBLEM [N]: [name]
+Severity: BLOCKER / HIGH / MEDIUM
+Found in: [table/column]
+Impact: [what breaks if ignored]
+Fix: [what must be done before building]
+
+Expected problems to look for (but not limited to):
+- No CGPA table → must compute on-the-fly → slow → need materialized view or cache strategy
+- Marks in components → need SUM + NULL handling → absent student shows 0 or NULL?
+- Branch linkage missing for HOD user → HOD sees all students or errors
+- Subject credits missing → SGPA calc impossible
+- Semester inferred not stored → wrong semester grouping
+- Student in branch but no marks row → invisible in ranking (silent exclusion)
+
+---
+
+## PHASE 2 — EXECUTION PLAN (after problem report approved)
+
+Only after problems identified + fixes confirmed, plan:
+
+### 2A — Backend APIs needed
+
+List each API:
+GET /hod/monitoring/semesters
+
+Returns: semesters available for HOD's branch
+Auth: requireHod
+DB query: [describe joins]
+
+GET /hod/monitoring/subjects?semesterId=X
+
+Returns: subjects for that semester in HOD's branch
+Auth: requireHod
+
+GET /hod/monitoring/students?semesterId=X&subjectId=Y
+
+Returns: ranked student list
+Ranking: by SGPA desc (semester-level) OR subject marks desc (subject-level)
+Highlight: top 10% flagged as is_top_performer: true
+Include: student name, roll no, marks obtained, max marks, percentage, sgpa, cgpa, rank
+Absent students: included with marks=0, status='absent'
+
+GET /hod/monitoring/students/:studentId?semesterId=X
+
+Returns: individual student full profile
+Include: all subjects of that semester + marks per component + sgpa + cgpa trend across semesters
+
+GET /hod/monitoring/students/:studentId/cgpa-trend
+
+Returns: CGPA per semester (for line graph)
+
+
+### 2B — SGPA/CGPA computation logic
+
+Write the EXACT SQL or Prisma query for:
+
+SGPA for student S in semester SEM:
+SGPA = SUM(grade_points × subject_credits) / SUM(subject_credits)
+Where grade_points = derived from percentage → grade → points (show the grade table).
+
+CGPA = average of all semester SGPAs (or weighted — confirm which).
+
+If no CGPA table exists: compute in-query using subquery. Show query. Explain performance impact. Recommend: add `student_semester_gpa` materialized table updated via BullMQ job after marks entry.
+
+### 2C — Ranking logic
+Per subject ranking:
+rank = RANK() OVER (PARTITION BY subject_id, semester_id ORDER BY total_marks DESC)
+Per semester ranking (by SGPA):
+rank = RANK() OVER (PARTITION BY semester_id, branch_id ORDER BY sgpa DESC)
+Top performer threshold: rank <= CEIL(total_students * 0.10)
+OR marks >= 85% of max_marks — whichever makes sense per project policy.
+
+Confirm which threshold to use. Show both options.
+
+### 2D — Frontend components needed
+HODMonitoringPage.tsx
+└── SemesterSelector (dropdown)
+└── SubjectSelector (dropdown, populated after semester)
+└── StudentRankingTable.tsx
+- Columns: Rank | Name | Roll No | Marks | % | SGPA | CGPA | Status
+- Top performer rows: highlighted (gold bg or green badge)
+- Click row → StudentDrillDown modal/page
+└── StudentDrillDown.tsx
+- Header: name, roll, branch, semester, CGPA badge
+- SubjectMarksBarChart (Recharts BarChart) — marks per subject in selected sem
+- CGPATrendLineChart (Recharts LineChart) — CGPA across all semesters
+- ComponentBreakdown — internal/external/practical marks per subject
+
+### 2E — Recharts implementation
+
+BarChart — marks per subject:
+```tsx
+<BarChart data={subjectMarks}>
+  <XAxis dataKey="subjectCode" />
+  <YAxis domain={[0, 100]} />
+  <Tooltip formatter={(val, name) => [`${val}/${maxMarks}`, name]} />
+  <Bar dataKey="marksObtained" fill="#6366f1">
+    <LabelList dataKey="percentage" position="top" formatter={v => `${v}%`} />
+  </Bar>
+  <ReferenceLine y={passMark} stroke="red" strokeDasharray="3 3" label="Pass" />
+</BarChart>
+```
+
+LineChart — CGPA trend:
+```tsx
+<LineChart data={cgpaTrend}>
+  <XAxis dataKey="semesterName" />
+  <YAxis domain={[0, 10]} />
+  <Tooltip />
+  <Line type="monotone" dataKey="cgpa" stroke="#6366f1" strokeWidth={2} dot={{ r: 5 }} />
+  <ReferenceLine y={7.0} stroke="orange" label="Good standing" />
+</LineChart>
+```
+
+### 2F — TanStack Query hooks
+
+```ts
+useHODSemesters() → GET /hod/monitoring/semesters
+useHODSubjects(semesterId) → GET /hod/monitoring/subjects?semesterId=X (enabled when semesterId set)
+useHODStudentRanking(semesterId, subjectId) → GET /hod/monitoring/students?... (enabled when both set)
+useStudentProfile(studentId, semesterId) → GET /hod/monitoring/students/:id?semesterId=X
+useStudentCGPATrend(studentId) → GET /hod/monitoring/students/:id/cgpa-trend
+```
+
+staleTime: 5 * 60 * 1000 (5 min) — marks don't change per request.
+invalidateQueries on marks update (BullMQ job completion event via Socket.io → queryClient.invalidateQueries).
+
+---
+
+## PHASE 3 — BUILD (only after Phase 2 approved)
+
+Build in this order:
+1. DB fixes (migrations if needed — e.g. add student_semester_gpa table).
+2. Backend: routes → controllers → services (SGPA/CGPA compute queries first).
+3. TanStack Query hooks.
+4. HODMonitoringPage layout + selectors.
+5. StudentRankingTable with highlight logic.
+6. StudentDrillDown + both charts.
+7. Socket.io invalidation on marks update.
+
+Each file: full code. No stubs. File path explicit.
+
+---
+
+## DEFINITION OF DONE
+
+[ ] HOD sees ONLY his branch students (RBAC enforced server-side).
+[ ] Semester dropdown → subject dropdown → student list: all cascade correctly.
+[ ] Top 10% students highlighted (gold/green row) at top of list.
+[ ] Rank computed correctly: RANK() window function, ties handled.
+[ ] SGPA computed correctly per semester with credit weights.
+[ ] CGPA = average of all semester SGPAs (or confirm formula).
+[ ] Students with NO marks: shown as "Not appeared" — NOT excluded silently.
+[ ] BarChart: marks per subject, correct max_marks per subject, pass line shown.
+[ ] LineChart: CGPA trend across all semesters, smooth.
+[ ] Charts update automatically when marks change (Socket.io → invalidateQueries).
+[ ] TypeScript: tsc --noEmit passes. No any except legacy.
+[ ] All API routes protected by requireHod middleware.
+
+START WITH PHASE 0. Show schema investigation results. Do not skip to code.
+
+
+
+
+
+
+
+
+result is publish , new sem time creation , it will be already seeded :
+
+particular registration will be detected , 
