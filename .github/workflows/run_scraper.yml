@@ -1,0 +1,36 @@
+name: IIB India Internship Scraper
+
+on:
+  schedule:
+    - cron: '30 2 * * *' # 08:00 IST
+  workflow_dispatch:
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          
+      - name: Install dependencies
+        run: |
+          pip install httpx openpyxl python-whois beautifulsoup4 python-dotenv rich
+          
+      - name: Run Scraper
+        env:
+          ADZUNA_APP_ID: ${{ secrets.ADZUNA_APP_ID }}
+          ADZUNA_API_KEY: ${{ secrets.ADZUNA_API_KEY }}
+        run: |
+          mkdir -p output
+          python backend/scripts/find_internships.py --all
+          
+      - name: Upload Excel Output
+        uses: actions/upload-artifact@v4
+        with:
+          name: Internship-Listings
+          path: output/*.xlsx
+          retention-days: 7
