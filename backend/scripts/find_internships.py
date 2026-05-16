@@ -8,7 +8,6 @@ from typing import Dict, List, Optional, Set
 from urllib.parse import urlparse, urljoin
 
 import httpx
-import whois
 # Fix for Windows console encoding issues with Rich
 if sys.platform == "win32":
     import io
@@ -17,7 +16,7 @@ if sys.platform == "win32":
 
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.worksheet.worksheet import Worksheet
 from rich.console import Console
@@ -86,7 +85,9 @@ class Internship:
         self.status = "PENDING"
         self.company_status = "UNVERIFIED"
         self.rejection_reason = ""
-        self.trust_score = 0
+        self.work_mode = "Not specified"
+        self.ambitionbox_url = ""
+        self.glassdoor_url = ""
         self.created_at = datetime.now()
         self.checked_at = datetime.now()
 
@@ -103,7 +104,7 @@ class InternshipFinder:
             "total_found": 0,
             "active": 0,
             "rejected": 0,
-            "expired": 0,
+            "backup": 0,
             "needs_review": 0
         }
 
@@ -122,8 +123,8 @@ class InternshipFinder:
             "Data Science": "data science intern machine learning"
         }
 
-        url = "https://api.adzuna.com/v1/api/jobs/in/search/1"
-        params = {
+        base_url = "https://api.adzuna.com/v1/api/jobs/in/search/1"
+        base_params = {
             "app_id": ADZUNA_APP_ID,
             "app_key": ADZUNA_API_KEY,
             "results_per_page": MAX_RESULTS_PER_SOURCE,
@@ -132,35 +133,36 @@ class InternshipFinder:
         }
 
         found = []
-        try:
-            async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
-                response = await client.get(url, params=params)
-                console.print(f"[cyan]Adzuna status: {response.status_code}[/cyan]")
-                if response.status_code != 200:
-                    console.print(f"[red]Adzuna response: {response.text[:300]}[/red]")
-                if response.status_code == 200:
-                    data = response.json()
-                    for job in data.get("results", []):
-                        intern = Internship(domain, "Adzuna")
-                        intern.company_name = job.get("company", {}).get("display_name", "Unknown")
-                        intern.title = job.get("title", "")
-                        intern.apply_link = job.get("redirect_url", "")
-                        intern.location = job.get("location", {}).get("display_name", "Remote")
-                        salary_min = job.get("salary_min", 0)
-                        salary_max = job.get("salary_max", 0)
-                        if salary_min > 0:
-                            intern.stipend_min = int(salary_min)
-                            if salary_max > salary_min:
-                                intern.stipend_display = f"₹{int(salary_min):,} - ₹{int(salary_max):,}/month"
+        for location in ["Mumbai", "Navi Mumbai"]:
+            params = {**base_params, "where": location}
+            try:
+                async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+                    response = await client.get(base_url, params=params)
+                    console.print(f"[cyan]Adzuna ({location}) status: {response.status_code}[/cyan]")
+                    if response.status_code != 200:
+                        console.print(f"[red]Adzuna ({location}): {response.text[:200]}[/red]")
+                    if response.status_code == 200:
+                        data = response.json()
+                        for job in data.get("results", []):
+                            intern = Internship(domain, "Adzuna")
+                            intern.company_name = job.get("company", {}).get("display_name", "Unknown")
+                            intern.title = job.get("title", "")
+                            intern.apply_link = job.get("redirect_url", "")
+                            intern.location = job.get("location", {}).get("display_name", location)
+                            salary_min = job.get("salary_min", 0)
+                            salary_max = job.get("salary_max", 0)
+                            if salary_min > 0:
+                                intern.stipend_min = int(salary_min)
+                                if salary_max > salary_min:
+                                    intern.stipend_display = f"₹{int(salary_min):,} - ₹{int(salary_max):,}/month"
+                                else:
+                                    intern.stipend_display = f"₹{int(salary_min):,}/month"
                             else:
-                                intern.stipend_display = f"₹{int(salary_min):,}/month"
-                        else:
-                            intern.stipend_display = "Not mentioned"
-                            intern.stipend_min = 0
-                        found.append(intern)
-        except Exception as e:
-            console.print(f"[red]Adzuna error: {str(e)}[/red]")
-        
+                                intern.stipend_display = "Not mentioned"
+                                intern.stipend_min = 0
+                            found.append(intern)
+            except Exception as e:
+                console.print(f"[red]Adzuna ({location}) error: {str(e)}[/red]")
         return found
 
     async def fetch_internshala(self, domain: str) -> List[Internship]:
@@ -346,16 +348,28 @@ class InternshipFinder:
             intern.location = "Work from home"
         elif any(x in loc for x in ["onsite", "on-site", "in office"]):
             intern.location = "On-site"
-            
-        # 3. Role
+
+        # 3. Work Mode
+        desc = (intern.title + " " + intern.stipend_display + " " + intern.location).lower()
+        if any(x in desc for x in ["work from home", "wfh", "remote", "online"]):
+            intern.work_mode = "Work from Home"
+        elif any(x in desc for x in ["hybrid"]):
+            intern.work_mode = "Hybrid"
+        elif any(x in desc for x in ["work from office", "wfo", "onsite", "on-site", "in office"]):
+            intern.work_mode = "Work from Office"
+        else:
+            intern.work_mode = "Not specified"
+
+        # 4. Role
         clean_role = intern.title
         clean_role = re.sub(r'\s*-\s*Internship', ' Intern', clean_role, flags=re.I)
         clean_role = re.sub(r'\(.*?\)', '', clean_role).strip()
         intern.role = clean_role
 
-        # 4. Last Date (generic parser)
-        # Note: Scrapers should ideally provide this. If not, set to None.
-        pass
+        # 5. Review URLs
+        slug = re.sub(r'[^a-z0-9\s-]', '', intern.company_name.lower()).strip().replace(' ', '-')
+        intern.ambitionbox_url = f"https://www.ambitionbox.com/overview/{slug}-overview"
+        intern.glassdoor_url = f"https://www.glassdoor.co.in/Reviews/{slug}-Reviews-E0.htm"
 
     async def run_pipeline(self, intern: Internship):
         # STEP 1: NORMALIZE
@@ -388,41 +402,36 @@ class InternshipFinder:
                     domain = urlparse(final_url).netloc.lower()
                     
                     if resp.status_code >= 400:
-                        intern.status = "REJECTED"
-                        intern.rejection_reason = f"invalid_link:HTTP_{resp.status_code}"
+                        intern.status = "NEEDS_REVIEW"
+                        intern.rejection_reason = f"link_check:HTTP_{resp.status_code}"
                         return
                     
-                    if any(x in domain for x in ["wa.me", "t.me", "bit.ly"]):
-                        intern.status = "REJECTED"
-                        intern.rejection_reason = "invalid_link:suspicious_domain"
+                    if any(x in link_domain for x in ["wa.me", "t.me", "bit.ly"]):
+                        intern.status = "NEEDS_REVIEW"
+                        intern.rejection_reason = "link_check:suspicious_domain"
                         return
             except Exception as e:
-                intern.status = "REJECTED"
-                intern.rejection_reason = f"invalid_link:timeout_or_error"
+                intern.status = "NEEDS_REVIEW"
+                intern.rejection_reason = "link_check:timeout_or_error"
                 return
 
-        # STEP 5: COMPANY VERIFICATION
-        intern.trust_score = await self.calculate_trust_score(intern)
-        if intern.trust_score >= 2:
+        # STEP 5: SIMPLIFIED TRUST — ATS link = verified, unknown = needs review
+        if any(ats in intern.apply_link.lower() for ats in KNOWN_ATS_DOMAINS):
             intern.company_status = "VERIFIED"
-        elif intern.trust_score == 1:
-            intern.company_status = "NEEDS_REVIEW"
         else:
-            intern.status = "REJECTED"
-            intern.rejection_reason = "low_trust"
-            return
+            intern.company_status = "NEEDS_REVIEW"
+        # Never reject on trust alone — just categorize
 
-        # STEP 6: DEADLINE CHECK
+        # STEP 6: DEADLINE CHECK — expired → BACKUP (append-only, never deleted)
         today = datetime.now().date()
         if intern.last_date and intern.last_date.date() < today:
-            intern.status = "EXPIRED"
+            intern.status = "BACKUP"
             intern.rejection_reason = "deadline_passed"
             return
-        
+
         if not intern.last_date:
-            # Default expiry check
             if (datetime.now() - intern.created_at).days > 60:
-                intern.status = "EXPIRED"
+                intern.status = "BACKUP"
                 intern.rejection_reason = "auto_expired_60d"
                 return
 
@@ -439,80 +448,123 @@ class InternshipFinder:
             else:
                 intern.status = "ACTIVE"
 
-    async def calculate_trust_score(self, intern: Internship) -> int:
-        if "internshala.com" in intern.apply_link.lower():
-            return 3 # Internshala IS the ATS, auto-verified
-            
-        score = 0
-        domain_parts = urlparse(intern.apply_link).netloc.split('.')
-        base_domain = '.'.join(domain_parts[-2:]) if len(domain_parts) >= 2 else ""
-
-        # Signal 3: Known ATS (Fast check)
-        if any(ats in intern.apply_link.lower() for ats in KNOWN_ATS_DOMAINS):
-            score += 1
-
-        # Signal 1 & 2: Website check
-        if base_domain and base_domain not in KNOWN_ATS_DOMAINS:
-            try:
-                async with httpx.AsyncClient(timeout=5) as client:
-                    resp = await client.get(f"http://{base_domain}")
-                    if resp.status_code < 400:
-                        score += 1
-                        # Check for real pages
-                        if any(x in resp.text.lower() for x in ["/about", "/careers", "/contact"]):
-                            score += 1
-            except: pass
-
-        # Signal 4: Glassdoor check
+    async def fetch_workindia(self, domain: str) -> List[Internship]:
+        keywords = {
+            "Android App Development": "android developer intern",
+            "Game Development": "game developer intern",
+            "iOS App Development": "ios developer intern",
+            "Web Development": "web developer intern",
+            "Graphic Design": "graphic design intern",
+            "Data Science": "data science intern"
+        }
+        kw = keywords.get(domain, "intern")
+        found = []
         try:
-            async with httpx.AsyncClient(
-                headers={"User-Agent": USER_AGENT}, timeout=5
-            ) as client:
-                resp = await client.get(
-                    f"https://www.glassdoor.co.in/Search/results.htm?keyword={intern.company_name}"
-                )
-                if resp.status_code == 200 and intern.company_name.lower()[:6] in resp.text.lower():
-                    score += 1
-        except:
-            pass
+            async with httpx.AsyncClient(headers={"User-Agent": USER_AGENT}, timeout=12, follow_redirects=True) as client:
+                resp = await client.get("https://www.workindia.in/jobs/internship", params={"q": kw})
+                if resp.status_code == 200:
+                    soup = BeautifulSoup(resp.text, 'html.parser')
+                    cards = (
+                        soup.find_all('div', class_=re.compile(r'job-card|jobCard|listing', re.I)) or
+                        soup.find_all('div', attrs={"data-job-id": True}) or
+                        soup.find_all('li', class_=re.compile(r'job|intern', re.I))
+                    )
+                    console.print(f"[cyan]WorkIndia cards: {len(cards)} for {domain}[/cyan]")
+                    for card in cards[:MAX_RESULTS_PER_SOURCE]:
+                        try:
+                            intern = Internship(domain, "WorkIndia")
+                            title_el = card.find(class_=re.compile(r'title|job-title|role', re.I))
+                            company_el = card.find(class_=re.compile(r'company|employer', re.I))
+                            salary_el = card.find(class_=re.compile(r'salary|stipend|pay', re.I))
+                            link_el = card.find('a', href=True)
+                            if not title_el or not link_el: continue
+                            intern.title = title_el.get_text(strip=True)
+                            href = link_el.get('href', '')
+                            intern.apply_link = href if href.startswith('http') else urljoin("https://www.workindia.in", href)
+                            intern.company_name = company_el.get_text(strip=True) if company_el else "Unknown"
+                            intern.stipend_display = salary_el.get_text(strip=True) if salary_el else "Not mentioned"
+                            if intern.title and intern.apply_link:
+                                found.append(intern)
+                        except: continue
+                else:
+                    console.print(f"[yellow]WorkIndia status: {resp.status_code}[/yellow]")
+        except Exception as e:
+            console.print(f"[red]WorkIndia error: {str(e)} — skipping[/red]")
+        return found
 
-        # Signal 5: Domain Age
-        if base_domain and base_domain not in KNOWN_ATS_DOMAINS:
-            try:
-                w = await asyncio.to_thread(whois.whois, base_domain)
-                creation_date = w.creation_date
-                if isinstance(creation_date, list): creation_date = creation_date[0]
-                if creation_date:
-                    age_days = (datetime.now() - creation_date).days
-                    if age_days >= 365: score += 1
-                    elif age_days < 90: score -= 1
-            except: pass
-
-        # Signal 6: Internshala company page
+    async def fetch_foundit(self, domain: str) -> List[Internship]:
+        keywords = {
+            "Android App Development": "android-developer-internship",
+            "Game Development": "game-developer-internship",
+            "iOS App Development": "ios-developer-internship",
+            "Web Development": "web-developer-internship",
+            "Graphic Design": "graphic-designer-internship",
+            "Data Science": "data-science-internship"
+        }
+        kw = keywords.get(domain, "internship")
+        found = []
         try:
-            slug = intern.company_name.lower().replace(" ", "-")
-            async with httpx.AsyncClient(headers={"User-Agent": USER_AGENT}, timeout=5) as client:
-                resp = await client.get(f"https://internshala.com/companies/{slug}/")
-                if resp.status_code == 200: score += 1
-        except: pass
-
-        return max(0, score)
+            async with httpx.AsyncClient(headers={"User-Agent": USER_AGENT}, timeout=12, follow_redirects=True) as client:
+                resp = await client.get("https://www.foundit.in/search/internships", params={"query": kw})
+                if resp.status_code == 200:
+                    soup = BeautifulSoup(resp.text, 'html.parser')
+                    cards = (
+                        soup.find_all('div', class_=re.compile(r'job-card|card-container|jobCard', re.I)) or
+                        soup.find_all('div', attrs={"data-job-id": True}) or
+                        soup.find_all('article', class_=re.compile(r'job|intern', re.I))
+                    )
+                    console.print(f"[cyan]Foundit cards: {len(cards)} for {domain}[/cyan]")
+                    for card in cards[:MAX_RESULTS_PER_SOURCE]:
+                        try:
+                            intern = Internship(domain, "Foundit")
+                            title_el = card.find(class_=re.compile(r'title|job-title|role', re.I))
+                            company_el = card.find(class_=re.compile(r'company|employer', re.I))
+                            salary_el = card.find(class_=re.compile(r'salary|stipend|pay', re.I))
+                            link_el = card.find('a', href=True)
+                            if not title_el or not link_el: continue
+                            intern.title = title_el.get_text(strip=True)
+                            href = link_el.get('href', '')
+                            intern.apply_link = href if href.startswith('http') else urljoin("https://www.foundit.in", href)
+                            intern.company_name = company_el.get_text(strip=True) if company_el else "Unknown"
+                            intern.stipend_display = salary_el.get_text(strip=True) if salary_el else "Not mentioned"
+                            if intern.title and intern.apply_link:
+                                found.append(intern)
+                        except: continue
+                else:
+                    console.print(f"[yellow]Foundit status: {resp.status_code}[/yellow]")
+        except Exception as e:
+            console.print(f"[red]Foundit error: {str(e)} — skipping[/red]")
+        return found
 
     def write_to_excel(self, filename: str):
         wb = Workbook()
-        # Remove default sheet
         std = wb["Sheet"]
         wb.remove(std)
 
-        # Create tabs
+        # Load existing BACKUP rows (append-only — never cleared)
+        existing_backup_rows = []
+        if os.path.exists(filename):
+            try:
+                existing_wb = load_workbook(filename)
+                if "BACKUP" in existing_wb.sheetnames:
+                    for row in existing_wb["BACKUP"].iter_rows(min_row=2, values_only=True):
+                        if any(row):
+                            existing_backup_rows.append(row)
+            except Exception:
+                pass
+
         tabs: Dict[str, Worksheet] = {}
-        all_tab_names = list(DOMAIN_TO_TAB.values()) + ["NEEDS REVIEW", "REJECTED", "EXPIRED"]
+        all_tab_names = list(DOMAIN_TO_TAB.values()) + ["NEEDS REVIEW", "REJECTED", "BACKUP"]
         for name in all_tab_names:
             tabs[name] = wb.create_sheet(name)
             self._setup_sheet(tabs[name], name)
 
-        # Counters for Sr No.
         counters = {name: 1 for name in all_tab_names}
+
+        # Re-append existing BACKUP rows first
+        for row in existing_backup_rows:
+            tabs["BACKUP"].append(list(row))
+            counters["BACKUP"] += 1
 
         for intern in self.results:
             target_tab = ""
@@ -521,22 +573,21 @@ class InternshipFinder:
             if intern.status == "REJECTED":
                 target_tab = "REJECTED"
                 extra_cols = [intern.rejection_reason, intern.checked_at.strftime("%Y-%m-%d %H:%M")]
-            elif intern.status == "EXPIRED":
-                target_tab = "EXPIRED"
-                extra_cols = [intern.checked_at.strftime("%Y-%m-%d %H:%M")]
+            elif intern.status == "BACKUP":
+                target_tab = "BACKUP"
+                extra_cols = [intern.checked_at.strftime("%Y-%m-%d %H:%M"), intern.source]
             elif intern.status == "NEEDS_REVIEW":
                 target_tab = "NEEDS REVIEW"
-                extra_cols = ["Trust score: " + str(intern.trust_score), intern.checked_at.strftime("%Y-%m-%d %H:%M")]
+                extra_cols = [intern.rejection_reason or "needs_review", intern.checked_at.strftime("%Y-%m-%d %H:%M")]
             elif intern.status == "ACTIVE":
-                target_tab = DOMAIN_TO_TAB.get(intern.domain, "REJECTED")
-            
+                target_tab = DOMAIN_TO_TAB.get(intern.domain, "NEEDS REVIEW")
+
             if target_tab:
                 ws = tabs[target_tab]
                 row_idx = counters[target_tab] + 1
                 self._write_row(ws, row_idx, counters[target_tab], intern, extra_cols)
                 counters[target_tab] += 1
 
-        # Formatting and Save
         for ws in wb.worksheets:
             self._finalize_sheet(ws)
 
@@ -544,20 +595,16 @@ class InternshipFinder:
         wb.save(filename)
 
     def _setup_sheet(self, ws: Worksheet, name: str):
-        headers = ["Sr. No.", "Company Name", "Stipend", "Name of internship", "Duration", "Role", "Last Date", "Link", "Location"]
+        headers = ["Sr. No.", "Company Name", "Stipend", "Name of internship", "Duration", "Role", "Last Date", "Link", "Location", "Work Mode", "AmbitionBox", "Glassdoor"]
         if name == "REJECTED":
-            headers += ["Rejection Reason", "Checked At"]
-        elif name == "EXPIRED":
-            headers += ["Expired At"]
+            headers = headers[:10] + ["Rejection Reason", "Checked At"]
+        elif name == "BACKUP":
+            headers = headers[:10] + ["Expired At", "Source"]
         elif name == "NEEDS REVIEW":
-            headers += ["Reason", "Checked At"]
-        
+            headers = headers[:10] + ["Reason", "Checked At"]
         ws.append(headers)
-        
-        # Header Style
         header_fill = PatternFill(start_color="1A1A1E", end_color="1A1A1E", fill_type="solid")
         header_font = Font(color="F5A623", bold=True, name="Calibri", size=11)
-        
         for cell in ws[1]:
             cell.fill = header_fill
             cell.font = header_font
@@ -573,31 +620,35 @@ class InternshipFinder:
             intern.role,
             intern.last_date.strftime("%d %b %Y") if intern.last_date else "Not mentioned",
             "Apply",
-            intern.location
+            intern.location,
+            intern.work_mode,
+            intern.ambitionbox_url,
+            intern.glassdoor_url,
         ] + extra
-
         ws.append(row_data)
-        
-        # Style
         bg_color = "0D0D0F" if row_idx % 2 == 0 else "141417"
         row_fill = PatternFill(start_color=bg_color, end_color=bg_color, fill_type="solid")
         row_font = Font(color="F8F8F8", name="Calibri", size=10)
-        
         for i, cell in enumerate(ws[row_idx]):
             cell.fill = row_fill
             cell.font = row_font
-            # Hyperlink for Link column (Index 7)
-            if i == 7:
+            if i == 7:  # Link column
                 cell.hyperlink = intern.apply_link
                 cell.font = Font(color="F5A623", underline="single", name="Calibri", size=10)
+            if i in (10, 11):  # AmbitionBox, Glassdoor — hyperlink + hide via col width
+                if cell.value:
+                    cell.hyperlink = str(cell.value)
+                cell.font = Font(color="4A90D9", underline="single", name="Calibri", size=10)
 
     def _finalize_sheet(self, ws: Worksheet):
-        # Column widths
-        widths = {'A': 8, 'B': 25, 'C': 22, 'D': 40, 'E': 12, 'F': 28, 'G': 14, 'H': 10, 'I': 18}
+        widths = {'A': 8, 'B': 25, 'C': 22, 'D': 40, 'E': 12, 'F': 28, 'G': 14, 'H': 10, 'I': 18, 'J': 16}
         for col, width in widths.items():
             ws.column_dimensions[col].width = width
-        
-        # Freeze and Filter
+        # Hide review URL cols K and L
+        ws.column_dimensions['K'].width = 0
+        ws.column_dimensions['K'].hidden = True
+        ws.column_dimensions['L'].width = 0
+        ws.column_dimensions['L'].hidden = True
         ws.freeze_panes = "A2"
         ws.auto_filter.ref = ws.dimensions
 
@@ -622,10 +673,11 @@ class InternshipFinder:
                 
                 results_naukri = await self.fetch_naukri(domain)
                 progress.update(task_id, advance=1)
-                
-                console.print("[yellow]Unstop skipped — JS-rendered site[/yellow]")
-                
-                all_found = results_adzuna + results_ishala + results_naukri
+
+                results_workindia = await self.fetch_workindia(domain)
+                results_foundit = await self.fetch_foundit(domain)
+
+                all_found = results_adzuna + results_ishala + results_naukri + results_workindia + results_foundit
                 self.stats["total_found"] += len(all_found)
                 
                 # Pipeline
@@ -637,7 +689,7 @@ class InternshipFinder:
                     # Update stats
                     if item.status == "ACTIVE": self.stats["active"] += 1
                     elif item.status == "REJECTED": self.stats["rejected"] += 1
-                    elif item.status == "EXPIRED": self.stats["expired"] += 1
+                    elif item.status == "BACKUP": self.stats["backup"] += 1
                     elif item.status == "NEEDS_REVIEW": self.stats["needs_review"] += 1
                     
                     progress.update(item_task, advance=1)
@@ -658,7 +710,7 @@ class InternshipFinder:
         table.add_row("Total found:", f"{self.stats['total_found']}")
         table.add_row("Active (saved):", f"[green]{self.stats['active']}[/green]")
         table.add_row("Rejected:", f"[red]{self.stats['rejected']}[/red]")
-        table.add_row("Expired:", f"[yellow]{self.stats['expired']}[/yellow]")
+        table.add_row("Backup (expired):", f"[yellow]{self.stats['backup']}[/yellow]")
         table.add_row("Needs Review:", f"[orange1]{self.stats['needs_review']}[/orange1]")
         table.add_row("Output:", f"[bold white]{filename}[/bold white]")
 

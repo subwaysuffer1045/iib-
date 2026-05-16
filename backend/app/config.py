@@ -82,6 +82,10 @@ class Settings(BaseSettings):
     MAX_RISK_FOR_AUTO_PUBLISH: int = 50     # spec: risk_score < 50
     LINK_VALIDATION_CACHE_TTL_SECONDS: int = 86400  # 24 hours
 
+    # ── Pipeline ───────────────────────────────────────────────────
+    HTTP_TIMEOUT: int = 8
+    MAX_RESULTS_PER_SOURCE: int = 50
+
     class Config:
         env_file = ".env"
 
