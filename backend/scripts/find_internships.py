@@ -91,13 +91,17 @@ class Internship:
         self.created_at = datetime.now()
         self.checked_at = datetime.now()
 
+    def get(self, key, default=None):
+        return getattr(self, key, default)
+
     def get_hash(self) -> str:
         data = f"{self.company_name.lower()}{self.title.lower()}{self.domain}"
         return hashlib.sha256(data.encode()).hexdigest()
 
 class InternshipFinder:
-    def __init__(self, dry_run=False):
+    def __init__(self, dry_run=False, args=None):
         self.dry_run = dry_run
+        self.args = args  # store for push access
         self.seen_hashes: Set[str] = set()
         self.results: List[Internship] = []
         self.stats = {
@@ -705,6 +709,18 @@ class InternshipFinder:
             console.print("[bold cyan]Dry run complete. No file written.[/bold cyan]")
             self._print_summary("N/A")
 
+        # ── DB PUSH (new) ──────────────────────────────────────
+        if self.args and self.args.push:
+            api_key = self.args.api_key or os.environ.get("IIB_INGEST_API_KEY", "")
+            if not api_key:
+                console.print("[bold red][push] ERROR: set --api-key or IIB_INGEST_API_KEY env var[/bold red]")
+            else:
+                active = [
+                    r for r in self.results
+                    if (r.get("status") or "").upper() in ("ACTIVE", "NEEDS_REVIEW")
+                ]
+                push_to_api(active, self.args.api_url, api_key, dry_run=False)
+
     def _print_summary(self, filename: str):
         table = Table(show_header=False, border_style="bright_blue")
         table.add_row("Total found:", f"{self.stats['total_found']}")
@@ -731,6 +747,97 @@ class InternshipFinder:
             color = "green" if reason == "ACTIVE" else "red"
             console.print(f"  [{color}]{reason}: {count}[/{color}]")
 
+WORK_MODE_MAP = {
+    "onsite": "onsite",
+    "office": "onsite",
+    "on-site": "onsite",
+    "in-office": "onsite",
+    "in office": "onsite",
+    "work from office": "onsite",
+    "remote": "remote",
+    "work from home": "remote",
+    "wfh": "remote",
+    "hybrid": "hybrid",
+}
+
+SOURCE_MAP = {
+    "adzuna": "adzuna",
+    "internshala": "manual",
+    "naukri": "manual",
+    "workindia": "manual",
+    "foundit": "manual",
+}
+
+def _row_to_ingest_item(r):
+    # Map work mode safely
+    wm = (r.work_mode or "onsite").lower().strip()
+    db_work_mode = WORK_MODE_MAP.get(wm, "onsite")
+    
+    # Map source safely
+    src = (r.source or "manual").lower().strip()
+    db_source = SOURCE_MAP.get(src, "manual")
+    
+    # Last date string format or None
+    last_date_str = None
+    if r.last_date:
+        if isinstance(r.last_date, datetime):
+            last_date_str = r.last_date.date().isoformat()
+        elif isinstance(r.last_date, date):
+            last_date_str = r.last_date.isoformat()
+        else:
+            last_date_str = str(r.last_date)
+
+    return {
+        "title": r.title or "",
+        "company_name": r.company_name or "Unknown",
+        "domain": r.domain or "Web Development",
+        "work_mode": db_work_mode,
+        "stipend_min": int(r.stipend_min) if r.stipend_min is not None else 0,
+        "stipend_text": r.stipend_display or "",
+        "apply_link": r.apply_link or "",
+        "last_date": last_date_str,
+        "location_text": r.location or "Remote",
+        "duration_text": r.duration or "Not mentioned",
+        "status": r.status.lower() if r.status else "draft",
+        "source": db_source,
+        "ambitionbox_url": r.ambitionbox_url or "",
+        "glassdoor_url": r.glassdoor_url or "",
+    }
+
+def push_to_api(active_results, api_url, api_key, dry_run=False):
+    if dry_run:
+        console.print(f"[cyan][push] DRY RUN: Would push {len(active_results)} items to {api_url}[/cyan]")
+        return
+
+    console.print(f"[cyan][push] Transforming {len(active_results)} items for ingestion...[/cyan]")
+    items = [_row_to_ingest_item(r) for r in active_results]
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+    
+    batch_size = 50
+    success_count = 0
+    url = f"{api_url.rstrip('/')}/api/v1/admin/ingest"
+    console.print(f"[cyan][push] Sending to {url}...[/cyan]")
+    
+    for i in range(0, len(items), batch_size):
+        batch = items[i:i + batch_size]
+        try:
+            with httpx.Client(timeout=30.0) as client:
+                response = client.post(url, json={"items": batch}, headers=headers)
+                if response.status_code in (200, 201):
+                    res_data = response.json()
+                    success_count += res_data.get("count", len(batch))
+                    console.print(f"[green][push] Batch {i//batch_size + 1} succeeded: {len(batch)} items pushed.[/green]")
+                else:
+                    console.print(f"[red][push] Batch {i//batch_size + 1} failed (HTTP {response.status_code}): {response.text[:500]}[/red]")
+        except Exception as e:
+            console.print(f"[red][push] Batch {i//batch_size + 1} error: {str(e)}[/red]")
+            
+    console.print(f"[bold green][push] Finished. Successfully pushed {success_count}/{len(items)} items.[/bold green]")
+
 def parse_args():
     import argparse
     parser = argparse.ArgumentParser(description="IIB India Internship Finder")
@@ -738,6 +845,9 @@ def parse_args():
     parser.add_argument("--domain", type=str, help="Run for a specific domain")
     parser.add_argument("--output", type=str, help="Output filename")
     parser.add_argument("--dry-run", action="store_true", help="Don't save to Excel")
+    parser.add_argument("--push", action="store_true", help="Push results to FastAPI DB")
+    parser.add_argument("--api-url", type=str, default="http://localhost:8000", help="FastAPI base URL")
+    parser.add_argument("--api-key", type=str, default=None, help="IIB_INGEST_API_KEY")
     return parser.parse_args()
 
 async def main():
@@ -764,7 +874,7 @@ async def main():
         # If relative path provided for output
         output_file = os.path.join("e:\\intraget\\iib-india\\output\\", args.output)
 
-    finder = InternshipFinder(dry_run=args.dry_run)
+    finder = InternshipFinder(dry_run=args.dry_run, args=args)
     await finder.start(selected_domains, output_file)
 
 if __name__ == "__main__":

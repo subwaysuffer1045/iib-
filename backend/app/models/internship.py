@@ -9,7 +9,7 @@ v2 adds: domain, status, paid_gate_passed, fee_scam_detected,
 from typing import Optional, List
 from datetime import datetime, date
 from sqlmodel import SQLModel, Field, Column
-from sqlalchemy import JSON
+from sqlalchemy import JSON, Enum as saEnum
 from enum import Enum
 import uuid
 from datetime import timezone
@@ -217,7 +217,7 @@ class Internship(SQLModel, table=True):
 
     # v2 source tracking
     source: Optional[InternshipSource] = Field(
-        default=None,
+        sa_column=Column(saEnum(InternshipSource, name="internshipsourceenum"), nullable=True),
         description="Which ingestion channel produced this internship",
     )
     source_id: Optional[str] = Field(

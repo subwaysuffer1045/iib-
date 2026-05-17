@@ -20,7 +20,7 @@ from app.models.audit import AuditLog, SuspiciousReport
 from app.models.import_batch import ImportBatch, ImportRow
 
 config = context.config
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+config.set_main_option("sqlalchemy.url", settings.DATABASE_URL.replace("%", "%%"))
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)

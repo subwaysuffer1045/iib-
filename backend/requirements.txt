@@ -11,7 +11,7 @@ alembic>=1.13.0
 pydantic>=2.7.0
 pydantic-settings>=2.2.0
 psycopg2-binary>=2.9.9     # sync driver for Alembic + scripts
-asyncpg==0.29.0             # kept: async driver used by existing service layer
+asyncpg>=0.30.0            # kept: async driver used by existing service layer
 
 # ── Auth ─────────────────────────────────────────────────────
 passlib[bcrypt]>=1.7.4

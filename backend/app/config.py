@@ -68,6 +68,7 @@ class Settings(BaseSettings):
     CORS_ORIGINS: str = "http://localhost:3000"
     API_V1_PREFIX: str = "/api/v1"
     RATE_LIMIT_REQUESTS_PER_MINUTE: int = 60
+    IIB_INGEST_API_KEY: str = "supersecret_ingest_key"
 
     # ── Verification engine constants ─────────────────────────────
     VERIFICATION_HTTP_TIMEOUT_SECONDS: int = 5

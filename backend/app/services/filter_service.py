@@ -35,7 +35,7 @@ async def get_filtered_internships(
     
     # Domain filter
     if domain:
-        conditions.append(Internship.domain_slug == domain)
+        conditions.append(or_(Internship.domain == domain, Internship.domain_slug == domain))
     
     # Work mode filter (secondary, can override region)
     if work_mode and region != REMOTE_REGION_VALUE:

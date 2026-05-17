@@ -8,6 +8,7 @@ from app.api.v1.companies import router as companies_router
 from app.api.v1.admin.internships import router as admin_internships_router
 from app.api.v1.admin.companies import router as admin_companies_router
 from app.api.v1.admin.sheet import router as admin_sheet_router
+from app.api.v1.admin.ingest import router as admin_ingest_router
 
 # Import all models so SQLAlchemy can resolve foreign keys
 from app.models import college, user, source, company, internship, crawl, saved, alert, audit, import_batch  # noqa: F401
@@ -34,6 +35,7 @@ app.include_router(companies_router, prefix="/api/v1/companies", tags=["companie
 app.include_router(admin_internships_router, prefix="/api/v1/admin/internships", tags=["admin-internships"])
 app.include_router(admin_companies_router, prefix="/api/v1/admin/companies", tags=["admin-companies"])
 app.include_router(admin_sheet_router, prefix="/api/v1/admin/sheet", tags=["admin-sheet"])
+app.include_router(admin_ingest_router, prefix="/api/v1/admin/ingest", tags=["admin-ingest"])
 
 @app.get("/")
 async def root():
