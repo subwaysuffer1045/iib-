@@ -17,6 +17,7 @@ asyncpg>=0.30.0            # kept: async driver used by existing service layer
 passlib[bcrypt]>=1.7.4
 python-jose[cryptography]>=3.3.0
 python-multipart>=0.0.9
+email-validator>=2.0.0     # required by pydantic for email field validation
 
 # ── Redis / Celery ───────────────────────────────────────────
 redis>=5.0.0
@@ -59,3 +60,5 @@ aiofiles>=23.2.1
 # ── Tests ────────────────────────────────────────────────────
 pytest>=8.0.0
 pytest-asyncio>=0.23.5
+
+email-validator>=2.0.0
