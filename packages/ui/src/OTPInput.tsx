@@ -6,10 +6,10 @@ interface OTPInputProps {
   disabled?: boolean
 }
 
-export const OTPInput: React.FC<OTPInputProps> = ({ 
-  length = 6, 
-  onComplete, 
-  disabled = false 
+export const OTPInput: React.FC<OTPInputProps> = ({
+  length = 6,
+  onComplete,
+  disabled = false
 }) => {
   const [otp, setOtp] = useState<string[]>(new Array(length).fill(""))
   const inputs = useRef<(HTMLInputElement | null)[]>([])
@@ -62,7 +62,7 @@ export const OTPInput: React.FC<OTPInputProps> = ({
       newOtp[idx] = char
     })
     setOtp(newOtp)
-    
+
     const lastIdx = Math.min(data.length, length - 1)
     inputs.current[lastIdx]?.focus()
 
@@ -82,7 +82,7 @@ export const OTPInput: React.FC<OTPInputProps> = ({
           maxLength={1}
           value={digit}
           disabled={disabled}
-          ref={(el) => (inputs.current[index] = el)}
+          ref={(el) => { inputs.current[index] = el; }}
           onChange={(e) => handleChange(e.target, index)}
           onKeyDown={(e) => handleKeyDown(e, index)}
           onPaste={handlePaste}
@@ -90,8 +90,8 @@ export const OTPInput: React.FC<OTPInputProps> = ({
             w-12 h-14 text-center text-2xl font-mono font-semibold
             bg-white/5 border rounded-lg transition-all duration-200
             focus:outline-none focus:ring-2 focus:ring-amber-500/40
-            ${digit 
-              ? 'border-amber-500/50 text-amber-400 bg-amber-500/5 shadow-[0_0_15px_rgba(245,166,35,0.1)]' 
+            ${digit
+              ? 'border-amber-500/50 text-amber-400 bg-amber-500/5 shadow-[0_0_15px_rgba(245,166,35,0.1)]'
               : 'border-white/10 text-white/90 hover:border-white/20'
             }
             ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-text'}
